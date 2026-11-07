@@ -32,7 +32,7 @@ DB_FILE = os.path.join(BASE_DIR, "shifts.db")
 # ⚙️ LINE TOKEN and GROUP ID
 # ==========================================
 LINE_TOKEN = "8fLcjDj6YKPSWebdzUteioyygkJEf2Qa+1xNRiDwf3jAlUnZGgMSnux2m9HrSnN766GzduxdHfBCpzEX7nLwUcpBbRCX1QD/r8gaXL2ZJX2CJd8NLY09PCI5gfJXwO/JUM1diWYYGfU1xW3rX0LP3AdB04t89/1O/w1cDnyilFU="
-LINE_GROUP_ID = "Ufdcc49484c2094d272994847bc0fe00a"
+LINE_GROUP_ID = "C764515bfcbc07701b55517c34943c963"
 
 # First-scan window used to decide the shift
 MORNING_WIN = (5 * 60, 8 * 60 + 30)    # 05:00-08:30 (Day shift)
@@ -41,9 +41,9 @@ DUP_SECONDS = 120                      # scans closer than this count as one sca
 
 # Auto run times (minutes since midnight) and how long after the time a run may still start
 SCHEDULE = [
-    (7 * 60 + 55, "day"),     # 07:55
+    (7 * 60 + 50, "day"),     # 07:50
     (8 * 60 + 30, "day"),     # 08:30
-    (19 * 60 + 55, "night"),  # 19:55
+    (19 * 60 + 50, "night"),  # 19:50
     (20 * 60 + 30, "night"),  # 20:30
 ]
 GRACE_MIN = 10
