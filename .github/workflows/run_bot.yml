@@ -30,7 +30,7 @@ jobs:
 
       # บังคับรันกะเช้า (day) เพื่อทดสอบทันที
       - name: Run script test (Day Shift)
-        run: python app.py auto
+        run: python app.py day
 
       # บันทึกไฟล์ shifts.db กลับเข้า GitHub เพื่อให้ข้อมูลประวัติกะไม่หายไปในรอบถัดไป
       - name: Commit and push shifts.db updates
