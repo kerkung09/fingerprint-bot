@@ -345,6 +345,13 @@ def get_working_saturday_shift(d):
 # ---------- Main logic ----------
 def run(shift_name, dry):
     now = datetime.now(TH_TZ).replace(tzinfo=None)
+
+    # เช็กวันหยุดก่อนเริ่มงาน (หากเป็นวันหยุด จะไม่ส่ง LINE และหยุดรันทันที)
+    reason = skip_reason(now.date())
+    if reason and "--force" not in sys.argv:
+        print(f"[{now:%Y-%m-%d %H:%M:%S}] Skipped run: Today is {reason}.")
+        return
+
     emps = load_employees()
     con = db()
 
@@ -501,7 +508,7 @@ if __name__ == "__main__":
         for s in parse_scans(raw)[:20]:
             print(s)
     elif len(sys.argv) >= 2 and sys.argv[1] in ("day", "night"):
-        run(sys.argv[1], "--dry-run" in sys.argv)      # manual run: ignores Sunday / holidays
+        run(sys.argv[1], "--dry-run" in sys.argv)      # manual run: checks Sunday / holidays
     elif len(sys.argv) >= 2 and sys.argv[1] == "auto":
         start_loop()
     else:
