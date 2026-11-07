@@ -32,7 +32,7 @@ DB_FILE = os.path.join(BASE_DIR, "shifts.db")
 # ⚙️ LINE TOKEN and GROUP ID
 # ==========================================
 LINE_TOKEN = "8fLcjDj6YKPSWebdzUteioyygkJEf2Qa+1xNRiDwf3jAlUnZGgMSnux2m9HrSnN766GzduxdHfBCpzEX7nLwUcpBbRCX1QD/r8gaXL2ZJX2CJd8NLY09PCI5gfJXwO/JUM1diWYYGfU1xW3rX0LP3AdB04t89/1O/w1cDnyilFU="
-LINE_GROUP_ID = "Ufdcc49484c2094d272994847bc0fe00a"
+LINE_GROUP_ID = "C764515bfcbc07701b55517c34943c963"
 
 # First-scan window used to decide the shift
 MORNING_WIN = (6 * 60, 8 * 60 + 30)    # 06:00-08:30 (Day shift)
