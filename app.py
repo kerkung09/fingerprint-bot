@@ -373,10 +373,10 @@ def run(shift_name, dry):
             ot_scans = [s for s in scans if start_check <= s <= now]
             if ot_scans:
                 scan_time_str = ot_scans[-1].strftime("%H:%M")
-                ot_scanned.append((emp, name, sat_shift, scan_time_str))
-                report.append(f"{emp:<10} {name:<14} Saturday Off (Shift {sat_shift}) - OT Scanned at {scan_time_str}")
+                ot_scanned.append((emp, name, scan_time_str))
+                report.append(f"{emp:<10} {name:<14} Saturday Off - OT Scanned at {scan_time_str}")
             else:
-                report.append(f"{emp:<10} {name:<14} Saturday Off (Shift {sat_shift}) - Skipped")
+                report.append(f"{emp:<10} {name:<14} Saturday Off - Skipped")
             continue
 
         if not shift:
@@ -419,8 +419,8 @@ def run(shift_name, dry):
     if is_saturday:
         lines.append(f"🟠 Off-day OT Scanned ({len(ot_scanned)} people):")
         if ot_scanned:
-            lines += [f" {i}. {e} {n} [Shift {s_group}] ({st_time})".rstrip()
-                      for i, (e, n, s_group, st_time) in enumerate(ot_scanned, 1)]
+            lines += [f" {i}. {e} {n} ({st_time})".rstrip()
+                      for i, (e, n, st_time) in enumerate(ot_scanned, 1)]
         else:
             lines.append(" (No off-day OT scans)")
         lines.append("")  # Blank separator line
