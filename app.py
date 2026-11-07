@@ -3,7 +3,7 @@
 Alert the LINE group about people who have not scanned their fingerprint yet.
 Built-in auto run: 07:55 & 08:30 (day shift), 19:55 & 20:30 (night shift),
 every day except Sundays and factory holidays (holidays.txt).
-Supports alternating Saturday shifts (Shift A on odd weeks, Shift B on even weeks),
+Supports alternating Saturday shifts (Shift B on odd weeks, Shift A on even weeks),
 and highlights Off-day OT employees who scanned in on their day off.
 """
 import json
@@ -337,9 +337,9 @@ def skip_reason(d):
 
 
 def get_working_saturday_shift(d):
-    """Returns 'A' for odd weeks and 'B' for even weeks."""
+    """Returns 'B' for odd weeks and 'A' for even weeks."""
     week_num = d.isocalendar()[1]
-    return "B" if week_num % 2 == 0 else "A"
+    return "A" if week_num % 2 == 0 else "B"
 
 
 # ---------- Main logic ----------
