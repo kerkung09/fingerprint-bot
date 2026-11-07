@@ -345,13 +345,6 @@ def get_working_saturday_shift(d):
 # ---------- Main logic ----------
 def run(shift_name, dry):
     now = datetime.now(TH_TZ).replace(tzinfo=None)
-
-    # เช็กวันหยุดก่อนเริ่มงาน (หากเป็นวันหยุด จะไม่ส่ง LINE และหยุดรันทันที)
-    reason = skip_reason(now.date())
-    if reason and "--force" not in sys.argv:
-        print(f"[{now:%Y-%m-%d %H:%M:%S}] Skipped run: Today is {reason}.")
-        return
-
     emps = load_employees()
     con = db()
 
@@ -376,22 +369,17 @@ def run(shift_name, dry):
 
         # Special Handling for Saturdays (Shift A / Shift B)
         if is_saturday and sat_shift in ("A", "B") and sat_shift != active_sat_shift:
-            # รู้กะแล้วและไม่ใช่กะของรอบนี้ -> ข้าม ไม่นับเป็น OT
-            if shift and shift != shift_name:
-                report.append(f"{emp:<10} {name:<14} Saturday Off - {LABEL[shift]} (skipped this round) | {last}")
-                continue
-
             start_check = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=IN_FROM[shift_name])
             ot_scans = [s for s in scans if start_check <= s <= now]
 
-            # กะไม่ชัด: รอบ day ถ้าคืนวันศุกร์มีสแกนเข้ากะดึก สแกนเช้านี้คือขาออก ไม่ใช่ OT
-            if shift_name == "day" and ot_scans:
-                fri = now.date() - timedelta(days=1)
-                worked_fri_night = any(
-                    s.date() == fri and minutes(s) >= IN_FROM["night"] for s in scans
-                )
-                if worked_fri_night:
-                    ot_scans = []
+            # คนที่ทำกะดึกคืนวันศุกร์ สแกนเช้าวันเสาร์คือสแกนออก ไม่ใช่ OT
+            fri = now.date() - timedelta(days=1)
+            worked_fri_night = any(
+                s.date() == fri and minutes(s) >= IN_FROM["night"] for s in scans
+            )
+            if worked_fri_night:
+                noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
+                ot_scans = [s for s in ot_scans if s >= noon]
 
             if ot_scans:
                 scan_time_str = ot_scans[-1].strftime("%H:%M")
@@ -401,7 +389,6 @@ def run(shift_name, dry):
                 report.append(f"{emp:<10} {name:<14} Saturday Off - Skipped")
             continue
 
-        # ---- เช็กกะ (ห้ามลบ) ----
         if not shift:
             unknown.append((emp, name))
             report.append(f"{emp:<10} {name:<14} shift unknown | {last}")
@@ -412,7 +399,8 @@ def run(shift_name, dry):
 
         in_shift += 1
         start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=IN_FROM[shift_name])
-
+        
+        # Check scan status within the shift window
         matching_scans = [s for s in scans if start <= s <= now]
         if matching_scans:
             scan_time_str = matching_scans[-1].strftime("%H:%M")
@@ -523,7 +511,7 @@ if __name__ == "__main__":
         for s in parse_scans(raw)[:20]:
             print(s)
     elif len(sys.argv) >= 2 and sys.argv[1] in ("day", "night"):
-        run(sys.argv[1], "--dry-run" in sys.argv)      # manual run: checks Sunday / holidays
+        run(sys.argv[1], "--dry-run" in sys.argv)      # manual run: ignores Sunday / holidays
     elif len(sys.argv) >= 2 and sys.argv[1] == "auto":
         start_loop()
     else:
