@@ -32,7 +32,7 @@ DB_FILE = os.path.join(BASE_DIR, "shifts.db")
 # ⚙️ LINE TOKEN and GROUP ID
 # ==========================================
 LINE_TOKEN = "8fLcjDj6YKPSWebdzUteioyygkJEf2Qa+1xNRiDwf3jAlUnZGgMSnux2m9HrSnN766GzduxdHfBCpzEX7nLwUcpBbRCX1QD/r8gaXL2ZJX2CJd8NLY09PCI5gfJXwO/JUM1diWYYGfU1xW3rX0LP3AdB04t89/1O/w1cDnyilFU="
-LINE_GROUP_ID = "C764515bfcbc07701b55517c34943c963"
+LINE_GROUP_ID = "Ufdcc49484c2094d272994847bc0fe00a"
 
 # First-scan window used to decide the shift
 MORNING_WIN = (6 * 60, 8 * 60 + 30)    # 06:00-08:30 (Day shift)
@@ -374,24 +374,33 @@ def run(shift_name, dry):
         today = [s for s in scans if s.date() == now.date()]
         last = f"last scan today {today[-1]:%H:%M}" if today else "no scan today"
 
-        # Special Handling for Saturdays (Shift A / Shift B)
+                # Special Handling for Saturdays (Shift A / Shift B)
         if is_saturday and sat_shift in ("A", "B") and sat_shift != active_sat_shift:
+            # 1) รู้กะอยู่แล้วและไม่ใช่กะของรอบนี้ -> ข้าม ไม่นับเป็น OT
+            #    (เช่น รอบ day แต่คนนี้เป็นกะดึก สแกนเช้านี้คือขาออก)
+            if shift and shift != shift_name:
+                report.append(f"{emp:<10} {name:<14} Saturday Off - {LABEL[shift]} (skipped this round) | {last}")
+                continue
+
             start_check = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=IN_FROM[shift_name])
             ot_scans = [s for s in scans if start_check <= s <= now]
+
+            # 2) กันกรณีกะไม่ชัด/unknown: รอบ day ถ้าคืนวันศุกร์มีสแกนเข้ากะดึก (17:00 ขึ้นไป)
+            #    สแกนเช้านี้ถือเป็นขาออก ไม่ใช่ OT
+            if shift_name == "day" and ot_scans:
+                fri = now.date() - timedelta(days=1)
+                worked_fri_night = any(
+                    s.date() == fri and minutes(s) >= IN_FROM["night"] for s in scans
+                )
+                if worked_fri_night:
+                    ot_scans = []
+
             if ot_scans:
                 scan_time_str = ot_scans[-1].strftime("%H:%M")
                 ot_scanned.append((emp, name, scan_time_str))
                 report.append(f"{emp:<10} {name:<14} Saturday Off - OT Scanned at {scan_time_str}")
             else:
                 report.append(f"{emp:<10} {name:<14} Saturday Off - Skipped")
-            continue
-
-        if not shift:
-            unknown.append((emp, name))
-            report.append(f"{emp:<10} {name:<14} shift unknown | {last}")
-            continue
-        if shift != shift_name:
-            report.append(f"{emp:<10} {name:<14} {LABEL[shift]} (skipped this round) | {last}")
             continue
 
         in_shift += 1
