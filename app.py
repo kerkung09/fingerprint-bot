@@ -11,11 +11,14 @@ import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
 URL = "https://webapp.calcomp.co.th/att/getwpr104fig.php"
+
+# Force Thailand Timezone (UTC+7) for GitHub Actions & Local execution
+TH_TZ = timezone(timedelta(hours=7))
 
 # All files are looked up next to this script (works no matter where it is started from)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -289,6 +292,7 @@ def load_holidays():
     if _holiday_cache["mtime"] == mtime:
         return _holiday_cache["dates"]
     dates = set()
+    today_year = datetime.now(TH_TZ).year
     with open(HOLIDAY_FILE, encoding="utf-8-sig", errors="ignore") as f:
         for n, line in enumerate(f, 1):
             line = line.strip()
@@ -306,7 +310,7 @@ def load_holidays():
             except ValueError:
                 print(f"[WARN] holidays.txt line {n} is not a real date: {line[:40]}")
                 continue
-            if abs(y - date.today().year) > 5:
+            if abs(y - today_year) > 5:
                 print(f"[WARN] holidays.txt line {n}: year {y} looks wrong: {line[:40]}")
                 continue
             dates.add(dt)
@@ -329,7 +333,8 @@ def skip_reason(d):
 
 # ---------- Main logic ----------
 def run(shift_name, dry):
-    now = datetime.now()
+    # Fixed: Force Thailand timezone (UTC+7)
+    now = datetime.now(TH_TZ).replace(tzinfo=None)
     emps = load_employees()
     con = db()
 
@@ -430,13 +435,14 @@ def start_loop():
     print("  except Sundays and factory holidays (holidays.txt)")
     print("  (press Ctrl+C to stop)")
     print("==================================================")
-    reason = skip_reason(date.today())
+    today_th = datetime.now(TH_TZ).date()
+    reason = skip_reason(today_th)
     print(f"Today is {'a workday' if not reason else 'NOT a workday (' + reason + ')'}; "
           f"{len(load_holidays())} holiday(s) loaded.")
 
     done = set()
     while True:
-        now = datetime.now()
+        now = datetime.now(TH_TZ).replace(tzinfo=None)
         done = {k for k in done if k[0] == now.date()}       # forget previous days
         at, shift = due_shift(now, done)
         if shift:
@@ -444,7 +450,7 @@ def start_loop():
             print(f"It is {now:%H:%M} - checking the {LABEL[shift].lower()}...")
             try:
                 run(shift, dry=False)
-            except Exception as e:                            # never let the service die
+            except Exception as e:                             # never let the service die
                 print(f"[ERROR] run({shift}) failed: {e!r}")
         time.sleep(20)
 
