@@ -41,10 +41,10 @@ DUP_SECONDS = 120                      # scans closer than this count as one sca
 
 # Auto run times (minutes since midnight) and how long after the time a run may still start
 SCHEDULE = [
-    (7 * 60 + 50, "day"),     # 07:50
-    (8 * 60 + 30, "day"),     # 08:30
-    (19 * 60 + 50, "night"),  # 19:50
-    (20 * 60 + 30, "night"),  # 20:30
+    (7 * 60 + 40, "day"),     # 07:40
+    (8 * 60 + 10, "day"),     # 08:10
+    (19 * 60 + 50, "night"),  # 19:40
+    (20 * 60 + 10, "night"),  # 20:10
 ]
 GRACE_MIN = 10
 
