@@ -31,4 +31,4 @@ jobs:
           pip install requests openpyxl
 
       - name: Run script
-        run: python app.py day --dry-run
+        run: python app.py day
