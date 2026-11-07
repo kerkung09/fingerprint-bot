@@ -3,6 +3,8 @@
 Alert the LINE group about people who have not scanned their fingerprint yet.
 Built-in auto run: 07:55 & 08:30 (day shift), 19:55 & 20:30 (night shift),
 every day except Sundays and factory holidays (holidays.txt).
+Supports alternating Saturday shifts (Shift A on odd weeks, Shift B on even weeks),
+and highlights Off-day OT employees who scanned in on their day off.
 """
 import json
 import os
@@ -22,7 +24,7 @@ TH_TZ = timezone(timedelta(hours=7))
 
 # All files are looked up next to this script (works no matter where it is started from)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EMP_FILE = os.path.join(BASE_DIR, "employees.xlsx")     # columns: Emp.no, Name
+EMP_FILE = os.path.join(BASE_DIR, "employees.xlsx")     # columns: Emp.no, Name, Shift (A/B)
 HOLIDAY_FILE = os.path.join(BASE_DIR, "holidays.txt")   # one per line: YYYY-MM-DD description
 DB_FILE = os.path.join(BASE_DIR, "shifts.db")
 
@@ -30,7 +32,7 @@ DB_FILE = os.path.join(BASE_DIR, "shifts.db")
 # ⚙️ LINE TOKEN and GROUP ID
 # ==========================================
 LINE_TOKEN = "8fLcjDj6YKPSWebdzUteioyygkJEf2Qa+1xNRiDwf3jAlUnZGgMSnux2m9HrSnN766GzduxdHfBCpzEX7nLwUcpBbRCX1QD/r8gaXL2ZJX2CJd8NLY09PCI5gfJXwO/JUM1diWYYGfU1xW3rX0LP3AdB04t89/1O/w1cDnyilFU="
-LINE_GROUP_ID = "C764515bfcbc07701b55517c34943c963"
+LINE_GROUP_ID = "Ufdcc49484c2094d272994847bc0fe00a"
 
 # First-scan window used to decide the shift
 MORNING_WIN = (6 * 60, 8 * 60 + 30)    # 06:00-08:30 (Day shift)
@@ -244,7 +246,7 @@ def _cell_text(v):
 
 
 def load_employees():
-    """Read employees.xlsx (first sheet). Header row: Emp.no, Name. Returns [(emp_no, name)]."""
+    """Read employees.xlsx (first sheet). Header row: Emp.no, Name, Shift (optional A/B). Returns [(emp_no, name, sat_shift)]."""
     try:
         from openpyxl import load_workbook
     except ImportError:
@@ -254,7 +256,7 @@ def load_employees():
 
     wb = load_workbook(EMP_FILE, data_only=True)
     ws = wb.active
-    emp_col = name_col = None
+    emp_col = name_col = shift_col = None
     out, seen = [], set()
     for row in ws.iter_rows(values_only=True):
         if emp_col is None:
@@ -266,6 +268,8 @@ def load_employees():
                     emp_col = i
                 elif h in ("name", "employeename", "empname") and name_col is None:
                     name_col = i
+                elif h in ("shift", "satshift", "saturdaygroup", "group") and shift_col is None:
+                    shift_col = i
             if emp_col is None:
                 raise SystemExit(f"{EMP_FILE}: header 'Emp.no' not found in the first row")
             continue
@@ -274,7 +278,8 @@ def load_employees():
             continue
         seen.add(emp)
         name = _cell_text(row[name_col]) if name_col is not None and name_col < len(row) else ""
-        out.append((emp, name))
+        sat_shift = _cell_text(row[shift_col]).upper() if shift_col is not None and shift_col < len(row) else ""
+        out.append((emp, name, sat_shift))
     wb.close()
     return out
 
@@ -331,26 +336,49 @@ def skip_reason(d):
     return None
 
 
+def get_working_saturday_shift(d):
+    """Returns 'A' for odd weeks and 'B' for even weeks."""
+    week_num = d.isocalendar()[1]
+    return "B" if week_num % 2 == 0 else "A"
+
+
 # ---------- Main logic ----------
 def run(shift_name, dry):
-    # Fixed: Force Thailand timezone (UTC+7)
     now = datetime.now(TH_TZ).replace(tzinfo=None)
     emps = load_employees()
     con = db()
 
+    # Determine Saturday shift working group
+    is_saturday = (now.weekday() == 5)
+    active_sat_shift = get_working_saturday_shift(now.date()) if is_saturday else None
+
     with ThreadPoolExecutor(max_workers=4) as ex:
         scans_all = list(ex.map(lambda e: get_scans(e[0]), emps))
 
-    scanned_ok, missing, unknown, failed, report = [], [], [], [], []
+    scanned_ok, ot_scanned, missing, unknown, failed, report = [], [], [], [], [], []
     in_shift = 0
-    for (emp, name), scans in zip(emps, scans_all):
+    for (emp, name, sat_shift), scans in zip(emps, scans_all):
         if scans is None:
             failed.append(emp)
             report.append(f"{emp:<10} {name:<14} could not fetch data")
             continue
+
         shift, estimated = ensure_shifts(con, emp, scans, now)
         today = [s for s in scans if s.date() == now.date()]
         last = f"last scan today {today[-1]:%H:%M}" if today else "no scan today"
+
+        # Special Handling for Saturdays (Shift A / Shift B)
+        if is_saturday and sat_shift in ("A", "B") and sat_shift != active_sat_shift:
+            start_check = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=IN_FROM[shift_name])
+            ot_scans = [s for s in scans if start_check <= s <= now]
+            if ot_scans:
+                scan_time_str = ot_scans[-1].strftime("%H:%M")
+                ot_scanned.append((emp, name, sat_shift, scan_time_str))
+                report.append(f"{emp:<10} {name:<14} Saturday Off (Shift {sat_shift}) - OT Scanned at {scan_time_str}")
+            else:
+                report.append(f"{emp:<10} {name:<14} Saturday Off (Shift {sat_shift}) - Skipped")
+            continue
+
         if not shift:
             unknown.append((emp, name))
             report.append(f"{emp:<10} {name:<14} shift unknown | {last}")
@@ -358,9 +386,9 @@ def run(shift_name, dry):
         if shift != shift_name:
             report.append(f"{emp:<10} {name:<14} {LABEL[shift]} (skipped this round) | {last}")
             continue
+
         in_shift += 1
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0) \
-            + timedelta(minutes=IN_FROM[shift_name])
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=IN_FROM[shift_name])
         
         # Check scan status within the shift window
         matching_scans = [s for s in scans if start <= s <= now]
@@ -374,9 +402,10 @@ def run(shift_name, dry):
     con.commit()
 
     label = LABEL[shift_name]
-    lines = [f"📊 PE ING Status Report: {label} at {now:%H:%M} ({now:%d/%m/%Y})\n"]
+    header_extra = f" (Saturday Shift {active_sat_shift})" if is_saturday else ""
+    lines = [f"📊 PE ING Status Report: {label}{header_extra} at {now:%H:%M} ({now:%d/%m/%Y})\n"]
 
-    # 1. Display employees who have scanned
+    # 1. Display employees who have scanned (Regular Shift)
     lines.append(f"🟢 Scanned ({len(scanned_ok)} people):")
     if scanned_ok:
         lines += [f" {i}. {e} {n} ({st_time})".rstrip()
@@ -386,7 +415,17 @@ def run(shift_name, dry):
 
     lines.append("")  # Blank separator line
 
-    # 2. Display employees who have not scanned yet
+    # 2. Display Off-day OT Scanned employees (Saturday Off-shift people working OT)
+    if is_saturday:
+        lines.append(f"🟠 Off-day OT Scanned ({len(ot_scanned)} people):")
+        if ot_scanned:
+            lines += [f" {i}. {e} {n} [Shift {s_group}] ({st_time})".rstrip()
+                      for i, (e, n, s_group, st_time) in enumerate(ot_scanned, 1)]
+        else:
+            lines.append(" (No off-day OT scans)")
+        lines.append("")  # Blank separator line
+
+    # 3. Display employees who have not scanned yet
     lines.append(f"🔴 Not Scanned Yet ({len(missing)} people):")
     if missing:
         lines += [f" {i}. {e} {n}{' *' if est else ''}".rstrip()
