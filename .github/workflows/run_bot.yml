@@ -2,14 +2,15 @@ name: Fingerprint Bot Runner
 
 on:
   schedule:
-    # ตั้งเวลาปลุกสคริปต์ขึ้นมาทำงาน 1 รอบต่อวัน (เช่น ปลุกตอน 07:50 น. เวลาไทย)
-    - cron: '50 0 * * *'
+    - cron: '55 0 * * *'   # 07:55 น. ไทย (กะเช้า รอบ 1)
+    - cron: '30 1 * * *'   # 08:30 น. ไทย (กะเช้า รอบ 2)
+    - cron: '55 12 * * *'  # 19:55 น. ไทย (กะดึก รอบ 1)
+    - cron: '30 13 * * *'  # 20:30 น. ไทย (กะดึก รอบ 2)
   workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # อนุญาตให้รันค้างไว้ได้สูงสุด 4 ชั่วโมง
     env:
       TZ: Asia/Bangkok
 
@@ -27,11 +28,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests openpyxl
 
-      # รันในโหมด auto ให้มันสแตนด์บายวนเช็กเวลา 07:55, 08:30, 19:55, 20:30 ในวันนั้น
-      - name: Run script auto loop
-        run: python app.py auto
+      # คำนวณช่วงเวลาอัตโนมัติ: ถ้าก่อนเที่ยงรัน day ถ้าหลังเที่ยงรัน night
+      - name: Run script for current shift
+        run: |
+          HOUR=$(date +%H)
+          if [ "$HOUR" -lt 12 ]; then
+            python app.py day
+          else
+            python app.py night
+          fi
 
-      # บันทึกไฟล์ shifts.db กลับเข้า GitHub หลังจาก loop ทำงานเสร็จสิ้นในแต่ละวัน
+      # บันทึกไฟล์ shifts.db กลับเข้า GitHub
       - name: Commit and push shifts.db updates
         run: |
           git config --global user.name "github-actions[bot]"
