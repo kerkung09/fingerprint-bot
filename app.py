@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
 Alert the LINE group about people who have not scanned their fingerprint yet.
-Built-in auto run: 07:55 & 08:30 (day shift), 19:55 & 20:30 (night shift),
+Built-in auto run: see SCHEDULE below (day shift & night shift),
 every day except Sundays and factory holidays (holidays.txt).
-Supports alternating Saturday shifts (Shift B on odd weeks, Shift A on even weeks),
-and highlights Off-day OT employees who scanned in on their day off.
+
+Shift is read from employees.xlsx (column "Group"):
+  D     = always day shift
+  A / B = alternate night <-> day every ROTATION_WEEKS weeks
+          (anchored at ROTATION_ANCHOR: group A starts a NIGHT block, B is on day)
+Saturday working shift (column "Shift": A/B) alternates every 1 week
+(Shift B on odd weeks, Shift A on even weeks), and employees who scanned in
+on their Saturday day off are highlighted as Off-day OT.
 """
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -24,34 +29,39 @@ TH_TZ = timezone(timedelta(hours=7))
 
 # All files are looked up next to this script (works no matter where it is started from)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EMP_FILE = os.path.join(BASE_DIR, "employees.xlsx")     # columns: Emp.no, Name, Shift (A/B)
+# Employee list: employees.numbers (Apple Numbers) or employees.xlsx - first one found is used.
+# Columns: Emp.no, Name, Shift (Saturday A/B), Group (D / A / B)
+_EMP_CANDIDATES = [os.path.join(BASE_DIR, "employees.numbers"),
+                   os.path.join(BASE_DIR, "employees.xlsx")]
+EMP_FILE = next((p for p in _EMP_CANDIDATES if os.path.exists(p)), _EMP_CANDIDATES[0])
 HOLIDAY_FILE = os.path.join(BASE_DIR, "holidays.txt")   # one per line: YYYY-MM-DD description
-DB_FILE = os.path.join(BASE_DIR, "shifts.db")
 
 # ==========================================
 # ⚙️ LINE TOKEN and GROUP ID
+# Set the token as an environment variable (recommended) instead of hard-coding it:
+#   Windows (cmd):  setx LINE_TOKEN "your-token"
 # ==========================================
-LINE_TOKEN = "8fLcjDj6YKPSWebdzUteioyygkJEf2Qa+1xNRiDwf3jAlUnZGgMSnux2m9HrSnN766GzduxdHfBCpzEX7nLwUcpBbRCX1QD/r8gaXL2ZJX2CJd8NLY09PCI5gfJXwO/JUM1diWYYGfU1xW3rX0LP3AdB04t89/1O/w1cDnyilFU="
-LINE_GROUP_ID = "C764515bfcbc07701b55517c34943c963"
+LINE_TOKEN = os.environ.get("LINE_TOKEN", "PUT_YOUR_LINE_TOKEN_HERE")
+LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID", "C764515bfcbc07701b55517c34943c963")
 
-# First-scan window used to decide the shift
-MORNING_WIN = (5 * 60, 8 * 60 + 30)    # 05:00-08:30 (Day shift)
-NIGHT_WIN = (17 * 60, 20 * 60 + 30)    # 17:00-20:30 (Night shift)
 DUP_SECONDS = 120                      # scans closer than this count as one scan
 
 # Auto run times (minutes since midnight) and how long after the time a run may still start
 SCHEDULE = [
     (7 * 60 + 40, "day"),     # 07:40
     (8 * 60 + 10, "day"),     # 08:10
-    (19 * 60 + 50, "night"),  # 19:40
+    (19 * 60 + 50, "night"),  # 19:50
     (20 * 60 + 30, "night"),  # 20:30
 ]
 GRACE_MIN = 10
 
 LABEL = {"day": "Day shift", "night": "Night shift"}
 
-# Employees change shift (day <-> night) every N weeks
+# Group A/B change shift (day <-> night) every N weeks
 ROTATION_WEEKS = 2
+# Reference Monday: from this week on, group A starts a NIGHT block (group B is on day).
+# Blocks then alternate every ROTATION_WEEKS weeks (works for dates before the anchor too).
+ROTATION_ANCHOR = date(2026, 11, 9)
 
 
 # ---------- Fetch data ----------
@@ -111,99 +121,30 @@ def get_scans(emp_no, retries=3):
             time.sleep(1.5)
 
 
-# ---------- Shift detection ----------
+# ---------- Shift from the Group column ----------
 def minutes(dt):
     return dt.hour * 60 + dt.minute
 
 
-def flip_shift(shift):
-    return "night" if shift == "day" else "day"
-
-
-def db():
-    con = sqlite3.connect(DB_FILE)
-    con.execute("""CREATE TABLE IF NOT EXISTS shift(
-        emp_no TEXT, week_start TEXT, shift TEXT,
-        PRIMARY KEY(emp_no, week_start))""")
-    return con
-
-
-def week_monday(now):
-    return (now - timedelta(days=now.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0)
-
-
-def detect_shift_for_week(scans, monday):
+def group_shift(group, d):
     """
-    ตรวจหากะของสัปดาห์ที่เริ่มต้นด้วย `monday` จากสแกนแรกสุดในสัปดาห์นั้น
-    (ตัดสแกนออกกะดึกของเช้าวันจันทร์ที่เป็นของสัปดาห์ก่อนออก)
+    D   -> always 'day'.
+    A/B -> alternate night/day every ROTATION_WEEKS weeks, anchored at ROTATION_ANCHOR
+           (anchor block: A = night, B = day).
+    Returns 'day' / 'night' / None (unknown or empty group).
     """
-    week_start_mon = monday.replace(hour=9, minute=0, second=0)  # เริ่มเช็กหลัง 09:00 น. วันจันทร์
-    week_end = monday + timedelta(days=7)
-
-    week_scans = [s for s in scans if week_start_mon <= s < week_end]
-    if not week_scans:
-        # ถ้าไม่มีสแกนหลัง 09:00 วันจันทร์ ให้ลองดูสแกนช่วง 05:00-08:30 ของวันจันทร์
-        mon_morning = [s for s in scans if monday.date() == s.date() and 5 * 60 <= minutes(s) <= 8 * 60 + 30]
-        if mon_morning:
-            return "day"
-        return None
-
-    week_scans.sort()
-    first_scan = week_scans[0]
-    m = minutes(first_scan)
-
-    if MORNING_WIN[0] <= m <= MORNING_WIN[1]:
+    group = (group or "").strip().upper()
+    if group == "D":
         return "day"
-    elif NIGHT_WIN[0] <= m <= NIGHT_WIN[1]:
-        return "night"
-
-    return None
-
-
-def get_previous_week_shift(con, emp, cur_monday):
-    """
-    ค้นหากะล่าสุดที่เคยบันทึกไว้ใน DB ย้อนหลังไปสูงสุด 8 สัปดาห์
-    """
-    check_monday = cur_monday - timedelta(days=7)
-    for _ in range(8):
-        wk_str = check_monday.strftime("%Y-%m-%d")
-        row = con.execute("SELECT shift FROM shift WHERE emp_no=? AND week_start=?",
-                          (emp, wk_str)).fetchone()
-        if row and row[0]:
-            return row[0], check_monday
-        check_monday -= timedelta(days=7)
-    return None, None
-
-
-def ensure_shifts(con, emp, scans, now):
-    """
-    ระบุกะของพนักงานในสัปดาห์นี้
-    """
-    cur_monday = week_monday(now)
-    wk_str = cur_monday.strftime("%Y-%m-%d")
-
-    # 1. เช็ก DB สัปดาห์ปัจจุบัน
-    row = con.execute("SELECT shift FROM shift WHERE emp_no=? AND week_start=?",
-                      (emp, wk_str)).fetchone()
-    if row and row[0]:
-        return row[0], False
-
-    # 2. ตรวจจากสแกนจริงในสัปดาห์นี้
-    detected = detect_shift_for_week(scans, cur_monday)
-    if detected:
-        con.execute("INSERT OR REPLACE INTO shift VALUES(?,?,?)", (emp, wk_str, detected))
-        return detected, False
-
-    # 3. คำนวณสลับกะล่วงหน้าถ้ายังไม่มีสแกนในสัปดาห์นี้
-    prev_shift, prev_monday = get_previous_week_shift(con, emp, cur_monday)
-    if prev_shift and prev_monday:
-        weeks_diff = (cur_monday - prev_monday).days // 7
-        blocks = weeks_diff // ROTATION_WEEKS
-        predicted_shift = prev_shift if (blocks % 2 == 0) else flip_shift(prev_shift)
-        return predicted_shift, True
-
-    return None, False
+    if group not in ("A", "B"):
+        return None
+    monday = d - timedelta(days=d.weekday())
+    weeks = (monday - ROTATION_ANCHOR).days // 7
+    block = (weeks // ROTATION_WEEKS) % 2          # 0 = anchor block, 1 = swapped block
+    a_is_night = (block == 0)
+    if group == "A":
+        return "night" if a_is_night else "day"
+    return "day" if a_is_night else "night"
 
 
 # ---------- LINE ----------
@@ -231,20 +172,42 @@ def _cell_text(v):
     return str(v).strip()
 
 
-def load_employees():
-    """Read employees.xlsx (first sheet). Header row: Emp.no, Name, Shift (optional A/B)."""
+def _read_rows(path):
+    """Return the rows (list of tuples) of the first sheet/table of a .numbers or .xlsx file."""
+    if not os.path.exists(path):
+        raise SystemExit(f"Employee file not found: {path}")
+
+    if path.lower().endswith(".numbers"):
+        try:
+            from numbers_parser import Document
+        except ImportError:
+            raise SystemExit("numbers-parser is not installed. Run:  pip install numbers-parser")
+        doc = Document(path)
+        table = doc.sheets[0].tables[0]          # first table of the first sheet
+        try:
+            return [tuple(r) for r in table.rows(values_only=True)]
+        except TypeError:                         # older numbers-parser versions
+            return [tuple(c.value for c in r) for r in table.rows()]
+
     try:
         from openpyxl import load_workbook
     except ImportError:
         raise SystemExit("openpyxl is not installed. Run:  pip install openpyxl")
-    if not os.path.exists(EMP_FILE):
-        raise SystemExit(f"Employee file not found: {EMP_FILE}")
+    wb = load_workbook(path, data_only=True)
+    rows = [tuple(r) for r in wb.active.iter_rows(values_only=True)]
+    wb.close()
+    return rows
 
-    wb = load_workbook(EMP_FILE, data_only=True)
-    ws = wb.active
-    emp_col = name_col = shift_col = None
+
+def load_employees():
+    """
+    Read the employee file (employees.numbers or employees.xlsx, first sheet/table).
+    Header row: Emp.no, Name, Shift (Saturday A/B, optional), Group (D / A / B).
+    Returns a list of (emp_no, name, sat_shift, group).
+    """
+    emp_col = name_col = shift_col = group_col = None
     out, seen = [], set()
-    for row in ws.iter_rows(values_only=True):
+    for row in _read_rows(EMP_FILE):
         if emp_col is None:
             if not any(c is not None and str(c).strip() for c in row):
                 continue
@@ -254,10 +217,14 @@ def load_employees():
                     emp_col = i
                 elif h in ("name", "employeename", "empname") and name_col is None:
                     name_col = i
-                elif h in ("shift", "satshift", "saturdaygroup", "group") and shift_col is None:
+                elif h in ("shift", "satshift", "saturdaygroup", "saturdayshift") and shift_col is None:
                     shift_col = i
+                elif h in ("group", "workgroup", "shiftgroup") and group_col is None:
+                    group_col = i
             if emp_col is None:
                 raise SystemExit(f"{EMP_FILE}: header 'Emp.no' not found in the first row")
+            if group_col is None:
+                raise SystemExit(f"{EMP_FILE}: header 'Group' not found in the first row")
             continue
         emp = _cell_text(row[emp_col]) if emp_col < len(row) else ""
         if not emp or emp in seen:
@@ -265,8 +232,8 @@ def load_employees():
         seen.add(emp)
         name = _cell_text(row[name_col]) if name_col is not None and name_col < len(row) else ""
         sat_shift = _cell_text(row[shift_col]).upper() if shift_col is not None and shift_col < len(row) else ""
-        out.append((emp, name, sat_shift))
-    wb.close()
+        group = _cell_text(row[group_col]).upper() if group_col < len(row) else ""
+        out.append((emp, name, sat_shift, group))
     return out
 
 
@@ -332,7 +299,6 @@ def get_working_saturday_shift(d):
 def run(shift_name, dry):
     now = datetime.now(TH_TZ).replace(tzinfo=None)
     emps = load_employees()
-    con = db()
 
     is_saturday = (now.weekday() == 5)
     active_sat_shift = get_working_saturday_shift(now.date()) if is_saturday else None
@@ -343,23 +309,25 @@ def run(shift_name, dry):
     scanned_ok, ot_scanned, missing, unknown, failed, report = [], [], [], [], [], []
     in_shift = 0
 
-    for (emp, name, sat_shift), scans in zip(emps, scans_all):
+    for (emp, name, sat_shift, group), scans in zip(emps, scans_all):
         if scans is None:
             failed.append(emp)
             report.append(f"{emp:<10} {name:<14} could not fetch data")
             continue
 
-        shift, estimated = ensure_shifts(con, emp, scans, now)
+        # Shift comes straight from the Group column (D / A / B) - no guessing from scans
+        shift = group_shift(group, now.date())
         today = [s for s in scans if s.date() == now.date()]
         last = f"last scan today {today[-1]:%H:%M}" if today else "no scan today"
 
         # Special Handling for Saturdays (Off-day OT)
         if is_saturday and sat_shift in ("A", "B") and sat_shift != active_sat_shift:
             saturday_scans = [s for s in scans if s.date() == now.date()]
-            
+
             ot_scans = []
             for s in saturday_scans:
-                # ถ้าพนักงานเป็นกะดึก สแกนช่วงเช้าตรู่ (05:00 - 09:00) คือสแกนออกของคืนวันศุกร์ ตัดทิ้ง
+                # Night-shift employee scanning early morning (05:00 - 09:00) = clock-out
+                # from Friday night, so ignore it
                 if shift == "night" and (5 * 60 <= minutes(s) <= 9 * 60):
                     continue
                 ot_scans.append(s)
@@ -374,7 +342,7 @@ def run(shift_name, dry):
 
         if not shift:
             unknown.append((emp, name))
-            report.append(f"{emp:<10} {name:<14} shift unknown | {last}")
+            report.append(f"{emp:<10} {name:<14} group '{group}' unknown | {last}")
             continue
         if shift != shift_name:
             report.append(f"{emp:<10} {name:<14} {LABEL[shift]} (skipped this round) | {last}")
@@ -383,36 +351,28 @@ def run(shift_name, dry):
         in_shift += 1
 
         # =========================================================================
-        # 🟢 แยกการเช็กสแกนเข้างาน กะเช้า VS กะดึก อย่างชัดเจน
+        # Check the clock-in scan: day shift vs night shift
         # =========================================================================
         matching_scans = []
         if shift_name == "day":
             for s in today:
                 m = minutes(s)
-                # สแกนเข้างานกะเช้าต้องอยู่ช่วง 05:00 - 08:30 น. เท่านั้น
+                # Day shift clock-in must be between 05:00 - 08:30
                 if 5 * 60 <= m <= 8 * 60 + 30:
                     matching_scans.append(s)
         else:
-            # กะดึก (Night Shift): เช็กสแกนตั้งแต่ 17:00 น. ของวันนี้เป็นต้นไป
-            today_date = now.date()
-            tomorrow_date = today_date + timedelta(days=1)
-            for s in scans:
-                s_date = s.date()
-                m = minutes(s)
-                if s_date == today_date and m >= 17 * 60:
-                    matching_scans.append(s)
-                elif s_date == tomorrow_date and m <= 9 * 60:
+            # Night shift clock-in must be today from 17:00 onwards
+            for s in today:
+                if minutes(s) >= 17 * 60:
                     matching_scans.append(s)
 
         if matching_scans:
             scan_time_str = matching_scans[-1].strftime("%H:%M")
-            scanned_ok.append((emp, name, estimated, scan_time_str))
-            report.append(f"{emp:<10} {name:<14} {LABEL[shift]}{' (estimated)' if estimated else ''} scanned at {scan_time_str} | {last}")
+            scanned_ok.append((emp, name, scan_time_str))
+            report.append(f"{emp:<10} {name:<14} {LABEL[shift]} scanned at {scan_time_str} | {last}")
         else:
-            missing.append((emp, name, estimated))
-            report.append(f"{emp:<10} {name:<14} {LABEL[shift]}{' (estimated)' if estimated else ''} NOT scanned | {last}")
-
-    con.commit()
+            missing.append((emp, name))
+            report.append(f"{emp:<10} {name:<14} {LABEL[shift]} NOT scanned | {last}")
 
     label = LABEL[shift_name]
     header_extra = f" (Saturday Shift {active_sat_shift})" if is_saturday else ""
@@ -421,7 +381,7 @@ def run(shift_name, dry):
     lines.append(f"🟢 Scanned ({len(scanned_ok)} people):")
     if scanned_ok:
         lines += [f" {i}. {e} {n} ({st_time})".rstrip()
-                  for i, (e, n, est, st_time) in enumerate(scanned_ok, 1)]
+                  for i, (e, n, st_time) in enumerate(scanned_ok, 1)]
     else:
         lines.append(" (No employees scanned yet)")
 
@@ -438,15 +398,12 @@ def run(shift_name, dry):
 
     lines.append(f"🔴 Not Scanned Yet ({len(missing)} people):")
     if missing:
-        lines += [f" {i}. {e} {n}{' *' if est else ''}".rstrip()
-                  for i, (e, n, est) in enumerate(missing, 1)]
-        if any(est for _, _, est in missing):
-            lines.append(f"\n* Shift estimated based on {ROTATION_WEEKS}-week rotation (no scan recorded this week)")
+        lines += [f" {i}. {e} {n}".rstrip() for i, (e, n) in enumerate(missing, 1)]
     else:
         lines.append(" 🎉 Everyone has scanned!")
 
     if unknown:
-        lines.append("\nℹ️ Shift Unknown (Not checked): "
+        lines.append("\nℹ️ Group Unknown (Not checked): "
                      + ", ".join(f"{e} {n}".strip() for e, n in unknown))
     if failed:
         lines.append("\n⚠️ Fetch Failed: " + ", ".join(failed))
@@ -518,4 +475,4 @@ if __name__ == "__main__":
         print("  python app.py day --dry-run     # test the day shift (no LINE message)")
         print("  python app.py day               # send the day shift now")
         print("  python app.py night             # send the night shift now")
-        print("  python app.py auto              # stand-by loop: runs at 07:55, 08:30, 19:55, 20:30 automatically")
+        print("  python app.py auto              # stand-by loop: runs automatically at the SCHEDULE times")
