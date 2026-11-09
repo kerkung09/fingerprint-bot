@@ -4,7 +4,7 @@ Alert the LINE group about people who have not scanned their fingerprint yet.
 Built-in auto run: see SCHEDULE below (day shift & night shift),
 every day except Sundays and factory holidays (holidays.txt).
 
-Shift is read from employees.xlsx (column "Group"):
+Shift is read from employees.xlsx (column "Group", or "Shift" if there is no Group column):
   D     = always day shift
   A / B = alternate night <-> day every ROTATION_WEEKS weeks
           (anchored at ROTATION_ANCHOR: group A starts a NIGHT block, B is on day)
@@ -29,11 +29,9 @@ TH_TZ = timezone(timedelta(hours=7))
 
 # All files are looked up next to this script (works no matter where it is started from)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Employee list: employees.numbers (Apple Numbers) or employees.xlsx - first one found is used.
-# Columns: Emp.no, Name, Shift (Saturday A/B), Group (D / A / B)
-_EMP_CANDIDATES = [os.path.join(BASE_DIR, "employees.numbers"),
-                   os.path.join(BASE_DIR, "employees.xlsx")]
-EMP_FILE = next((p for p in _EMP_CANDIDATES if os.path.exists(p)), _EMP_CANDIDATES[0])
+# Employee list: employees.xlsx (Excel)
+# Columns: Emp.no, Name, Shift (A/B), Group (D / A / B, optional - if missing, Shift is used)
+EMP_FILE = os.path.join(BASE_DIR, "employees.xlsx")
 HOLIDAY_FILE = os.path.join(BASE_DIR, "holidays.txt")   # one per line: YYYY-MM-DD description
 
 # ==========================================
@@ -173,36 +171,24 @@ def _cell_text(v):
 
 
 def _read_rows(path):
-    """Return the rows (list of tuples) of the first sheet/table of a .numbers or .xlsx file."""
+    """Return the rows (list of tuples) of the first sheet of an .xlsx file."""
     if not os.path.exists(path):
         raise SystemExit(f"Employee file not found: {path}")
-
-    if path.lower().endswith(".numbers"):
-        try:
-            from numbers_parser import Document
-        except ImportError:
-            raise SystemExit("numbers-parser is not installed. Run:  pip install numbers-parser")
-        doc = Document(path)
-        table = doc.sheets[0].tables[0]          # first table of the first sheet
-        try:
-            return [tuple(r) for r in table.rows(values_only=True)]
-        except TypeError:                         # older numbers-parser versions
-            return [tuple(c.value for c in r) for r in table.rows()]
-
     try:
         from openpyxl import load_workbook
     except ImportError:
         raise SystemExit("openpyxl is not installed. Run:  pip install openpyxl")
     wb = load_workbook(path, data_only=True)
-    rows = [tuple(r) for r in wb.active.iter_rows(values_only=True)]
+    rows = [tuple(r) for r in wb.worksheets[0].iter_rows(values_only=True)]
     wb.close()
     return rows
 
 
 def load_employees():
     """
-    Read the employee file (employees.numbers or employees.xlsx, first sheet/table).
-    Header row: Emp.no, Name, Shift (Saturday A/B, optional), Group (D / A / B).
+    Read employees.xlsx (first sheet).
+    Header row: Emp.no, Name, Shift (A/B), Group (D / A / B, optional).
+    If there is no Group column, the Shift column (A/B) is used as the group.
     Returns a list of (emp_no, name, sat_shift, group).
     """
     emp_col = name_col = shift_col = group_col = None
@@ -224,7 +210,9 @@ def load_employees():
             if emp_col is None:
                 raise SystemExit(f"{EMP_FILE}: header 'Emp.no' not found in the first row")
             if group_col is None:
-                raise SystemExit(f"{EMP_FILE}: header 'Group' not found in the first row")
+                group_col = shift_col          # no Group column -> use Shift (A/B) as the group
+            if group_col is None:
+                raise SystemExit(f"{EMP_FILE}: header 'Group' or 'Shift' not found in the first row")
             continue
         emp = _cell_text(row[emp_col]) if emp_col < len(row) else ""
         if not emp or emp in seen:
