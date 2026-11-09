@@ -2,10 +2,10 @@ name: Fingerprint Bot Runner
 
 on:
   schedule:
-    - cron: '40 23 * * *'  # 06:40 ไทย (กะเช้า รอบ 1)
-    - cron: '10 0 * * *'   # 07:10 ไทย (กะเช้า รอบ 2)
-    - cron: '40 11 * * *'  # 18:40 ไทย (กะดึก รอบ 1)
-    - cron: '10 12 * * *'  # 19:10 ไทย (กะดึก รอบ 2)
+    - cron: '40 23 * * 0-5'  # 06:40 ไทย จ-ส (กะเช้า รอบ 1)
+    - cron: '10 0 * * 1-6'   # 07:10 ไทย จ-ส (กะเช้า รอบ 2)
+    - cron: '40 11 * * 1-6'  # 18:40 ไทย จ-ส (กะดึก รอบ 1)
+    - cron: '10 12 * * 1-6'  # 19:10 ไทย จ-ส (กะดึก รอบ 2)
   workflow_dispatch:
 
 jobs:
@@ -33,9 +33,9 @@ jobs:
         env:
           SCHEDULE: ${{ github.event.schedule }}
         run: |
-          if [ "$SCHEDULE" = "40 23 * * *" ] || [ "$SCHEDULE" = "10 0 * * *" ]; then
+          if [ "$SCHEDULE" = "40 23 * * 0-5" ] || [ "$SCHEDULE" = "10 0 * * 1-6" ]; then
             python app.py day
-          elif [ "$SCHEDULE" = "40 11 * * *" ] || [ "$SCHEDULE" = "10 12 * * *" ]; then
+          elif [ "$SCHEDULE" = "40 11 * * 1-6" ] || [ "$SCHEDULE" = "10 12 * * 1-6" ]; then
             python app.py night
           else
             # กดรันเอง: ก่อนเที่ยง = day, หลังเที่ยง = night
