@@ -454,7 +454,14 @@ if __name__ == "__main__":
         for s in parse_scans(raw)[:20]:
             print(s)
     elif len(sys.argv) >= 2 and sys.argv[1] in ("day", "night"):
-        run(sys.argv[1], "--dry-run" in sys.argv)
+        dry = "--dry-run" in sys.argv
+        reason = skip_reason(datetime.now(TH_TZ).date())
+        if reason and not dry:
+            print(f"Today is {reason} - nothing to send.")
+        else:
+            if reason:
+                print(f"[NOTE] Today is {reason} - a real run would be skipped (dry-run continues).")
+            run(sys.argv[1], dry)
     elif len(sys.argv) >= 2 and sys.argv[1] == "auto":
         start_loop()
     else:
