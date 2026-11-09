@@ -2,10 +2,10 @@ name: Fingerprint Bot Runner
 
 on:
   schedule:
-    - cron: '45 0 * * *'   # 07:45 ไทย (กะเช้า รอบ 1)
-    - cron: '10 1 * * *'   # 08:10 ไทย (กะเช้า รอบ 2)
-    - cron: '45 12 * * *'  # 19:45 ไทย (กะดึก รอบ 1)
-    - cron: '10 13 * * *'  # 20:10 ไทย (กะดึก รอบ 2)
+    - cron: '40 23 * * *'  # 06:40 ไทย (กะเช้า รอบ 1)
+    - cron: '10 0 * * *'   # 07:10 ไทย (กะเช้า รอบ 2)
+    - cron: '40 11 * * *'  # 18:40 ไทย (กะดึก รอบ 1)
+    - cron: '10 12 * * *'  # 19:10 ไทย (กะดึก รอบ 2)
   workflow_dispatch:
 
 jobs:
@@ -27,15 +27,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests openpyxl numbers-parser
+          pip install requests openpyxl
 
       - name: Run script for current shift
         env:
           SCHEDULE: ${{ github.event.schedule }}
         run: |
-          if [ "$SCHEDULE" = "45 0 * * *" ] || [ "$SCHEDULE" = "10 1 * * *" ]; then
+          if [ "$SCHEDULE" = "40 23 * * *" ] || [ "$SCHEDULE" = "10 0 * * *" ]; then
             python app.py day
-          elif [ "$SCHEDULE" = "45 12 * * *" ] || [ "$SCHEDULE" = "10 13 * * *" ]; then
+          elif [ "$SCHEDULE" = "40 11 * * *" ] || [ "$SCHEDULE" = "10 12 * * *" ]; then
             python app.py night
           else
             # กดรันเอง: ก่อนเที่ยง = day, หลังเที่ยง = night
