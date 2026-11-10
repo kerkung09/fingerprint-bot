@@ -40,7 +40,7 @@ HOLIDAY_FILE = os.path.join(BASE_DIR, "holidays.txt")   # one per line: YYYY-MM-
 #   Windows (cmd):  setx LINE_TOKEN "your-token"
 # ==========================================
 LINE_TOKEN = os.environ.get("LINE_TOKEN") or ""
-LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID") or "Ufdcc49484c2094d272994847bc0fe00a"
+LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID") or "C764515bfcbc07701b55517c34943c963"
 
 DUP_SECONDS = 120                      # scans closer than this count as one scan
 
