@@ -11,9 +11,11 @@ on:
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       TZ: Asia/Bangkok
       LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+      LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
 
     steps:
       - name: Checkout code
@@ -28,6 +30,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests openpyxl
+
+      - name: Test connectivity
+        continue-on-error: true
+        run: |
+          echo "LINE_TOKEN length: ${#LINE_TOKEN}"
+          curl -sS -m 10 -o /dev/null -w "calcomp: HTTP %{http_code}\n" https://webapp.calcomp.co.th/att/ || echo "calcomp: UNREACHABLE from GitHub runner"
+          curl -sS -m 10 -o /dev/null -w "line: HTTP %{http_code} (401 is normal here)\n" https://api.line.me/v2/bot/info || echo "line: UNREACHABLE"
 
       - name: Run script for current shift
         env:
