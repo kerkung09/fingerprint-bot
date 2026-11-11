@@ -39,8 +39,8 @@ HOLIDAY_FILE = os.path.join(BASE_DIR, "holidays.txt")   # one per line: YYYY-MM-
 # Set the token as an environment variable (recommended) instead of hard-coding it:
 #   Windows (cmd):  setx LINE_TOKEN "your-token"
 # ==========================================
-LINE_TOKEN = os.environ.get("LINE_TOKEN") or ""
-LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID") or "C764515bfcbc07701b55517c34943c963"
+LINE_TOKEN = (os.environ.get("LINE_TOKEN") or "").strip()
+LINE_GROUP_ID = (os.environ.get("LINE_GROUP_ID") or "C764515bfcbc07701b55517c34943c963").strip()
 
 DUP_SECONDS = 120                      # scans closer than this count as one scan
 
@@ -67,6 +67,9 @@ BASE = "https://webapp.calcomp.co.th/att/"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
 
+# (connect timeout, read timeout) in seconds - short so a blocked site fails fast
+FETCH_TIMEOUT = (5, 10)
+
 
 def fetch_raw(emp_no):
     r = requests.post(
@@ -83,7 +86,7 @@ def fetch_raw(emp_no):
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
         },
-        timeout=20,
+        timeout=FETCH_TIMEOUT,
     )
     if r.status_code != 200:
         print(f"[HTTP {r.status_code}] {r.text[:500]}", file=sys.stderr)
@@ -108,13 +111,13 @@ def parse_scans(raw):
     return out
 
 
-def get_scans(emp_no, retries=3):
+def get_scans(emp_no, retries=2):
     for i in range(retries):
         try:
             return parse_scans(fetch_raw(emp_no))
         except Exception as e:
+            print(f"[WARN] {emp_no} try {i + 1}/{retries}: {e!r}", file=sys.stderr)
             if i == retries - 1:
-                print(f"[WARN] {emp_no}: {e}", file=sys.stderr)
                 return None
             time.sleep(1.5)
 
@@ -147,6 +150,10 @@ def group_shift(group, d):
 
 # ---------- LINE ----------
 def push_line(text):
+    if not LINE_TOKEN:
+        raise RuntimeError("LINE_TOKEN is empty (check the GitHub secret named LINE_TOKEN)")
+    if not LINE_GROUP_ID:
+        raise RuntimeError("LINE_GROUP_ID is empty")
     for i in range(0, len(text), 4500):
         r = requests.post(
             "https://api.line.me/v2/bot/message/push",
@@ -154,7 +161,9 @@ def push_line(text):
             json={"to": LINE_GROUP_ID, "messages": [{"type": "text", "text": text[i:i + 4500]}]},
             timeout=20,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            # 401 = bad token | 429 = monthly quota used up | 400/403 = bad group id / bot not in group
+            raise RuntimeError(f"LINE API {r.status_code}: {r.text}")
 
 
 # ---------- Employees (Excel) ----------
@@ -285,14 +294,22 @@ def get_working_saturday_shift(d):
 
 # ---------- Main logic ----------
 def run(shift_name, dry):
+    """Returns True when everything worked, False when sending/fetching failed."""
     now = datetime.now(TH_TZ).replace(tzinfo=None)
     emps = load_employees()
+    print(f"[{now:%Y-%m-%d %H:%M:%S}] loaded {len(emps)} employees, "
+          f"LINE_TOKEN set: {bool(LINE_TOKEN)}, group id: {LINE_GROUP_ID[:6]}...")
 
     is_saturday = (now.weekday() == 5)
     active_sat_shift = get_working_saturday_shift(now.date()) if is_saturday else None
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         scans_all = list(ex.map(lambda e: get_scans(e[0]), emps))
+
+    all_failed = bool(emps) and all(s is None for s in scans_all)
+    if all_failed:
+        print("[ERROR] Could not fetch data for ANY employee "
+              "(site unreachable / blocked from this machine?)", file=sys.stderr)
 
     scanned_ok, ot_scanned, missing, unknown, failed, report = [], [], [], [], [], []
     in_shift = 0
@@ -399,12 +416,16 @@ def run(shift_name, dry):
     msg = "\n".join(lines)
     print(f"[{now:%Y-%m-%d %H:%M:%S}] --- {label} status ---")
     print(msg)
+
+    ok = not all_failed
     if not dry:
         try:
             push_line(msg)
             print("--> LINE message sent")
         except Exception as e:
-            print(f"--> Failed to send LINE message: {e}")
+            print(f"--> Failed to send LINE message: {e}", file=sys.stderr)
+            ok = False
+    return ok
 
 
 # ---------- Auto mode (daemon loop) ----------
@@ -461,7 +482,8 @@ if __name__ == "__main__":
         else:
             if reason:
                 print(f"[NOTE] Today is {reason} - a real run would be skipped (dry-run continues).")
-            run(sys.argv[1], dry)
+            # exit code 1 -> GitHub Actions run turns red when fetching or sending fails
+            sys.exit(0 if run(sys.argv[1], dry) else 1)
     elif len(sys.argv) >= 2 and sys.argv[1] == "auto":
         start_loop()
     else:
