@@ -68,7 +68,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
 
 # (connect timeout, read timeout) in seconds - short so a blocked site fails fast
-FETCH_TIMEOUT = (5, 10)
+FETCH_TIMEOUT = (5, 40)
 
 
 def fetch_raw(emp_no):
@@ -303,8 +303,25 @@ def run(shift_name, dry):
     is_saturday = (now.weekday() == 5)
     active_sat_shift = get_working_saturday_shift(now.date()) if is_saturday else None
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        scans_all = list(ex.map(lambda e: get_scans(e[0]), emps))
+    # Probe the first employee: if the attendance site does not answer at all,
+    # stop early, tell the LINE group (this also proves LINE works) and fail the run.
+    probe = get_scans(emps[0][0]) if emps else []
+    if emps and probe is None:
+        alert = (f"⚠️ PE ING Status Report: {LABEL[shift_name]} at {now:%H:%M} ({now:%d/%m/%Y})\n"
+                 "Cannot reach the attendance site (webapp.calcomp.co.th). "
+                 "No scan data - please check manually.")
+        print("[ERROR] Attendance site did not answer (timeout). Blocked from this machine?",
+              file=sys.stderr)
+        if not dry:
+            try:
+                push_line(alert)
+                print("--> LINE alert sent (site unreachable)")
+            except Exception as e:
+                print(f"--> Failed to send LINE message: {e}", file=sys.stderr)
+        return False
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        scans_all = ([probe] if emps else []) + list(ex.map(lambda e: get_scans(e[0]), emps[1:]))
 
     all_failed = bool(emps) and all(s is None for s in scans_all)
     if all_failed:
